@@ -1,0 +1,68 @@
+analyze_log:
+  name: Analyze log
+  description: >
+    Read the Home Assistant log, redact PII/secrets locally, send the redacted
+    text to the configured LLM (OpenRouter / OpenAI-compatible), and post a
+    persistent notification with the analysis.
+  fields:
+    log_path:
+      name: Log path
+      description: Override the default <config>/home-assistant.log path.
+      example: /config/home-assistant.log
+      required: false
+      selector:
+        text:
+    lines:
+      name: Lines
+      description: Number of last matching log entries to include.
+      example: 500
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 20000
+          mode: box
+    levels:
+      name: Levels
+      description: Log levels to include.
+      required: false
+      selector:
+        select:
+          multiple: true
+          options:
+            - DEBUG
+            - INFO
+            - WARNING
+            - ERROR
+            - CRITICAL
+    model:
+      name: Model
+      description: Override the default model for this single call.
+      example: anthropic/claude-haiku-4.5
+      required: false
+      selector:
+        text:
+
+redact_text:
+  name: Redact text
+  description: >
+    Run the local redactor on a string and return the redacted text plus a
+    count of findings, grouped by kind.
+  fields:
+    text:
+      name: Text
+      description: The text to scan and redact.
+      required: true
+      selector:
+        text:
+          multiline: true
+    style:
+      name: Style
+      description: "'typed' replaces with [KIND]; 'fixed' replaces with [REDACTED]."
+      required: false
+      default: typed
+      selector:
+        select:
+          options:
+            - typed
+            - fixed

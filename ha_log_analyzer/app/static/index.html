@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HA Log Analyzer</title>
+  <base href="__BASE_HREF__">
+  <style>
+    :root {
+      --primary: #03a9f4;
+      --primary-dim: rgba(3, 169, 244, 0.15);
+      --bg: #111827;
+      --surface: #1f2937;
+      --surface-2: #374151;
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
+      --border: rgba(255, 255, 255, 0.1);
+      --success: #10b981;
+      --success-dim: rgba(16, 185, 129, 0.15);
+      --warning: #f59e0b;
+      --warning-dim: rgba(245, 158, 11, 0.15);
+      --error: #ef4444;
+      --error-dim: rgba(239, 68, 68, 0.15);
+      --radius: 8px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .app {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 1.5rem 1.25rem 3rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    /* ── Header ─────────────────────────────────── */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 0.625rem;
+    }
+
+    .header-left svg { color: var(--primary); flex-shrink: 0; }
+
+    .header h1 {
+      font-size: 1.1875rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    /* ── Badges ──────────────────────────────────── */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      padding: 0.2rem 0.6rem;
+      border-radius: 99px;
+      font-size: 0.75rem;
+      font-weight: 500;
+      background: var(--surface-2);
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+    .badge-ok   { background: var(--success-dim); color: var(--success); }
+    .badge-warn { background: var(--warning-dim); color: var(--warning); }
+    .badge-model { background: var(--primary-dim); color: var(--primary); }
+
+    /* ── Options bar ─────────────────────────────── */
+    .options-bar {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0.875rem 1.125rem;
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+    }
+
+    .opt-label {
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    .opt-group {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    input[type="number"] {
+      width: 5.5rem;
+      padding: 0.3rem 0.5rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--text);
+      font-size: 0.875rem;
+    }
+    input[type="number"]:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
+
+    .level-checks {
+      display: flex;
+      gap: 0.625rem;
+      flex-wrap: wrap;
+    }
+
+    .level-checks label {
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+      cursor: pointer;
+      font-size: 0.8125rem;
+      color: var(--text);
+      user-select: none;
+    }
+    .level-checks input[type="checkbox"] { accent-color: var(--primary); }
+
+    /* ── Source panels ───────────────────────────── */
+    .panels {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.125rem;
+    }
+    @media (max-width: 620px) { .panels { grid-template-columns: 1fr; } }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.375rem 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .panel-title {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.9375rem;
+      font-weight: 600;
+    }
+    .panel-title svg { color: var(--primary); flex-shrink: 0; }
+
+    .panel-desc {
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+      line-height: 1.55;
+    }
+
+    /* ── Buttons ─────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.5rem 1.125rem;
+      border-radius: 6px;
+      border: none;
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 500;
+      transition: opacity 0.15s, transform 0.1s;
+      align-self: flex-start;
+      font-family: inherit;
+    }
+    .btn:disabled { opacity: 0.38; cursor: not-allowed; }
+    .btn:not(:disabled):hover { opacity: 0.88; }
+    .btn:not(:disabled):active { transform: scale(0.975); }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-ghost   { background: var(--surface-2); color: var(--text); }
+
+    /* ── Drop zone ───────────────────────────────── */
+    .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 1.75rem 1rem;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+      color: var(--text-muted);
+      font-size: 0.8125rem;
+    }
+    .drop-zone:hover,
+    .drop-zone.over { border-color: var(--primary); background: var(--primary-dim); }
+    .drop-zone svg { display: block; margin: 0 auto 0.5rem; color: var(--text-muted); }
+    .drop-zone .link { color: var(--primary); cursor: pointer; }
+    .drop-zone .picked { color: var(--text); font-weight: 500; margin-top: 0.375rem; }
+
+    /* ── Loading ─────────────────────────────────── */
+    .loading {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 1rem 1.25rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text-muted);
+      font-size: 0.875rem;
+    }
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2px solid var(--border);
+      border-top-color: var(--primary);
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Error ───────────────────────────────────── */
+    .error-box {
+      padding: 0.875rem 1.125rem;
+      background: var(--error-dim);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      border-radius: var(--radius);
+      color: #fca5a5;
+      font-size: 0.875rem;
+    }
+    .error-box strong { color: var(--error); }
+
+    /* ── Results ─────────────────────────────────── */
+    .results {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .results-stats {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.8rem 1.125rem;
+      background: var(--surface-2);
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+      font-size: 0.8125rem;
+    }
+    .results-stats .stat { color: var(--text-muted); }
+    .results-stats strong { color: var(--text); }
+    .results-stats .sep { color: var(--border); }
+
+    .redaction-tags {
+      display: flex;
+      gap: 0.375rem;
+      flex-wrap: wrap;
+      padding: 0.625rem 1.125rem;
+      border-bottom: 1px solid var(--border);
+      min-height: 2.5rem;
+    }
+    .rtag {
+      padding: 0.125rem 0.5rem;
+      background: var(--primary-dim);
+      color: var(--primary);
+      border-radius: 4px;
+      font-size: 0.6875rem;
+      font-family: 'SFMono-Regular', Consolas, monospace;
+      letter-spacing: 0.01em;
+    }
+
+    .analysis-body {
+      padding: 1.375rem 1.25rem;
+      overflow-x: auto;
+      font-size: 0.9375rem;
+      line-height: 1.7;
+    }
+
+    /* Markdown output styling */
+    .analysis-body h1, .analysis-body h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--primary);
+      margin: 1.5rem 0 0.5rem;
+      padding-bottom: 0.3rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .analysis-body h2:first-child,
+    .analysis-body h1:first-child { margin-top: 0; }
+    .analysis-body h3 { font-size: 0.9375rem; font-weight: 600; margin: 1rem 0 0.375rem; }
+    .analysis-body p  { margin-bottom: 0.75rem; }
+    .analysis-body ul,
+    .analysis-body ol { padding-left: 1.375rem; margin-bottom: 0.75rem; }
+    .analysis-body li { margin-bottom: 0.2rem; }
+    .analysis-body strong { color: var(--text); font-weight: 600; }
+    .analysis-body em { color: var(--text-muted); }
+    .analysis-body code {
+      background: rgba(0, 0, 0, 0.3);
+      padding: 0.1em 0.35em;
+      border-radius: 3px;
+      font-family: 'SFMono-Regular', Consolas, monospace;
+      font-size: 0.875em;
+      color: #93c5fd;
+    }
+    .analysis-body pre {
+      background: rgba(0, 0, 0, 0.35);
+      padding: 0.875rem 1rem;
+      border-radius: 6px;
+      overflow-x: auto;
+      margin-bottom: 0.875rem;
+    }
+    .analysis-body pre code { background: none; padding: 0; }
+    .analysis-body table {
+      border-collapse: collapse;
+      width: 100%;
+      margin-bottom: 1rem;
+      font-size: 0.875rem;
+    }
+    .analysis-body th,
+    .analysis-body td {
+      border: 1px solid var(--border);
+      padding: 0.4rem 0.75rem;
+      text-align: left;
+    }
+    .analysis-body th { background: var(--surface-2); font-weight: 600; }
+    .analysis-body blockquote {
+      border-left: 3px solid var(--primary);
+      padding-left: 0.875rem;
+      color: var(--text-muted);
+      margin: 0 0 0.75rem;
+    }
+    .analysis-body a { color: var(--primary); }
+
+    /* ── Utilities ───────────────────────────────── */
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35M11 8v6M8 11h6"/>
+      </svg>
+      <h1>HA Log Analyzer</h1>
+    </div>
+    <div class="header-right">
+      <span id="api-badge" class="badge">checking…</span>
+      <span id="model-badge" class="badge badge-model" style="display:none"></span>
+    </div>
+  </header>
+
+  <!-- Options -->
+  <div class="options-bar">
+    <div class="opt-group">
+      <span class="opt-label">Lines</span>
+      <input type="number" id="lines" value="500" min="10" max="20000" step="50">
+    </div>
+    <div class="opt-group">
+      <span class="opt-label">Levels</span>
+      <div class="level-checks" id="level-checks">
+        <label><input type="checkbox" name="level" value="DEBUG"> DEBUG</label>
+        <label><input type="checkbox" name="level" value="INFO"> INFO</label>
+        <label><input type="checkbox" name="level" value="WARNING" checked> WARNING</label>
+        <label><input type="checkbox" name="level" value="ERROR" checked> ERROR</label>
+        <label><input type="checkbox" name="level" value="CRITICAL" checked> CRITICAL</label>
+      </div>
+    </div>
+  </div>
+
+  <!-- Source panels -->
+  <div class="panels">
+
+    <!-- Live analysis -->
+    <div class="panel">
+      <div class="panel-title">
+        <svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/>
+          <line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/>
+        </svg>
+        Live Analysis
+      </div>
+      <p class="panel-desc">
+        Fetch the current <code>home-assistant.log</code> directly from the
+        Supervisor and analyze it. No file needed.
+      </p>
+      <button class="btn btn-primary" id="btn-live">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+        </svg>
+        Analyze Live Log
+      </button>
+    </div>
+
+    <!-- Upload -->
+    <div class="panel">
+      <div class="panel-title">
+        <svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        Upload Log File
+      </div>
+      <p class="panel-desc">
+        Upload a <code>home-assistant.log</code> file from your computer to
+        analyze it offline.
+      </p>
+      <div class="drop-zone" id="drop-zone">
+        <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+        </svg>
+        <div>Drop file here or <span class="link" id="browse-link">browse</span></div>
+        <input type="file" id="file-input" accept=".log,.txt" style="display:none">
+        <div class="picked hidden" id="file-name"></div>
+      </div>
+      <button class="btn btn-ghost" id="btn-upload" disabled>
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        Analyze File
+      </button>
+    </div>
+
+  </div><!-- .panels -->
+
+  <!-- Loading indicator -->
+  <div class="loading hidden" id="loading">
+    <div class="spinner"></div>
+    <span id="loading-text">Analyzing…</span>
+  </div>
+
+  <!-- Error -->
+  <div class="error-box hidden" id="error-box">
+    <strong>Error: </strong><span id="error-msg"></span>
+  </div>
+
+  <!-- Results -->
+  <div class="results hidden" id="results">
+    <div class="results-stats">
+      <span class="stat"><strong id="stat-entries">0</strong> entries analyzed</span>
+      <span class="sep">·</span>
+      <span class="stat"><strong id="stat-redact">0</strong> redactions</span>
+      <span class="sep">·</span>
+      <span class="stat" id="stat-model-wrap">model <strong id="stat-model"></strong></span>
+      <span class="sep">·</span>
+      <span class="stat"><strong id="stat-tokens">0</strong> tokens</span>
+    </div>
+    <div class="redaction-tags" id="redaction-tags"></div>
+    <div class="analysis-body" id="analysis-body"></div>
+  </div>
+
+</div><!-- .app -->
+
+<script>
+  // ── helpers ────────────────────────────────────────────────────────────────
+  function apiUrl(path) {
+    return new URL(path, document.baseURI).href;
+  }
+
+  function setLoading(on, text) {
+    const el = document.getElementById('loading');
+    if (on) {
+      document.getElementById('loading-text').textContent = text || 'Analyzing…';
+      el.classList.remove('hidden');
+      document.getElementById('error-box').classList.add('hidden');
+      document.getElementById('results').classList.add('hidden');
+    } else {
+      el.classList.add('hidden');
+    }
+  }
+
+  function showError(msg) {
+    setLoading(false);
+    document.getElementById('error-msg').textContent = msg;
+    document.getElementById('error-box').classList.remove('hidden');
+  }
+
+  function getSelectedLevels() {
+    return Array.from(
+      document.querySelectorAll('input[name="level"]:checked')
+    ).map(cb => cb.value);
+  }
+
+  // ── config load ────────────────────────────────────────────────────────────
+  async function loadConfig() {
+    try {
+      const resp = await fetch(apiUrl('api/config'));
+      if (!resp.ok) return;
+      const cfg = await resp.json();
+
+      const apiBadge = document.getElementById('api-badge');
+      if (cfg.has_api_key) {
+        apiBadge.textContent = '✓ API key set';
+        apiBadge.className = 'badge badge-ok';
+      } else {
+        apiBadge.textContent = '⚠ No API key';
+        apiBadge.className = 'badge badge-warn';
+      }
+
+      const modelBadge = document.getElementById('model-badge');
+      modelBadge.textContent = cfg.model;
+      modelBadge.style.display = '';
+
+      document.getElementById('lines').value = cfg.default_lines || 500;
+
+      const defaultLevels = cfg.default_levels || ['WARNING', 'ERROR', 'CRITICAL'];
+      document.querySelectorAll('input[name="level"]').forEach(cb => {
+        cb.checked = defaultLevels.includes(cb.value);
+      });
+    } catch (_) { /* non-fatal */ }
+  }
+
+  // ── show results ───────────────────────────────────────────────────────────
+  function showResults(data) {
+    setLoading(false);
+
+    document.getElementById('stat-entries').textContent = data.entries_analyzed ?? '?';
+    document.getElementById('stat-redact').textContent = data.redaction_count ?? 0;
+    document.getElementById('stat-model').textContent = data.model || '';
+    const tokens = (data.prompt_tokens || 0) + (data.completion_tokens || 0);
+    document.getElementById('stat-tokens').textContent = tokens.toLocaleString();
+
+    const tagsEl = document.getElementById('redaction-tags');
+    tagsEl.innerHTML = '';
+    if (data.redaction_kinds) {
+      Object.entries(data.redaction_kinds)
+        .sort((a, b) => b[1] - a[1])
+        .forEach(([kind, count]) => {
+          const t = document.createElement('span');
+          t.className = 'rtag';
+          t.textContent = `${kind} ×${count}`;
+          tagsEl.appendChild(t);
+        });
+    }
+
+    document.getElementById('analysis-body').innerHTML =
+      data.analysis_html || '<p>No analysis returned.</p>';
+
+    document.getElementById('results').classList.remove('hidden');
+    document.getElementById('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  // ── analyze (shared) ───────────────────────────────────────────────────────
+  async function runAnalyze(logText) {
+    const resp = await fetch(apiUrl('api/analyze'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        log_text: logText,
+        lines: parseInt(document.getElementById('lines').value, 10) || 500,
+        levels: getSelectedLevels(),
+      }),
+    });
+    const result = await resp.json();
+    if (!resp.ok) throw new Error(result.error || `HTTP ${resp.status}`);
+    return result;
+  }
+
+  // ── live analysis ──────────────────────────────────────────────────────────
+  document.getElementById('btn-live').addEventListener('click', async () => {
+    setLoading(true, 'Fetching log from Supervisor…');
+    try {
+      const logResp = await fetch(apiUrl('api/log'));
+      const logData = await logResp.json();
+      if (!logResp.ok) throw new Error(logData.error || `HTTP ${logResp.status}`);
+
+      setLoading(true, 'Redacting and analyzing…');
+      const result = await runAnalyze(logData.log_text);
+      showResults(result);
+    } catch (err) {
+      showError(err.message);
+    }
+  });
+
+  // ── file upload ────────────────────────────────────────────────────────────
+  let selectedFile = null;
+
+  function handleFile(file) {
+    if (!file) return;
+    selectedFile = file;
+    const nameEl = document.getElementById('file-name');
+    nameEl.textContent = file.name;
+    nameEl.classList.remove('hidden');
+    document.getElementById('btn-upload').disabled = false;
+  }
+
+  const dropZone = document.getElementById('drop-zone');
+  const fileInput = document.getElementById('file-input');
+
+  document.getElementById('browse-link').addEventListener('click', e => {
+    e.stopPropagation();
+    fileInput.click();
+  });
+  dropZone.addEventListener('click', () => fileInput.click());
+
+  dropZone.addEventListener('dragover', e => {
+    e.preventDefault();
+    dropZone.classList.add('over');
+  });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('over');
+    handleFile(e.dataTransfer.files[0]);
+  });
+
+  fileInput.addEventListener('change', e => handleFile(e.target.files[0]));
+
+  document.getElementById('btn-upload').addEventListener('click', async () => {
+    if (!selectedFile) return;
+    setLoading(true, 'Reading file…');
+    try {
+      const text = await selectedFile.text();
+      setLoading(true, 'Redacting and analyzing…');
+      const result = await runAnalyze(text);
+      showResults(result);
+    } catch (err) {
+      showError(err.message);
+    }
+  });
+
+  // ── init ───────────────────────────────────────────────────────────────────
+  loadConfig();
+</script>
+</body>
+</html>

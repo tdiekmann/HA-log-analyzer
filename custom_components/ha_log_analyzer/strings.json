@@ -1,0 +1,73 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "HA Log Analyzer — OpenRouter setup",
+        "description": "Enter your OpenRouter (or any OpenAI-compatible) API key. The key is validated against the /models endpoint before the integration is created. Logs are redacted locally before any data is sent to this endpoint.",
+        "data": {
+          "api_key": "API key",
+          "model": "Model id (e.g. anthropic/claude-haiku-4.5)",
+          "base_url": "API base URL"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid API key",
+      "cannot_connect": "Could not reach the API endpoint"
+    },
+    "abort": {
+      "already_configured": "HA Log Analyzer is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "HA Log Analyzer options",
+        "data": {
+          "model": "Model id",
+          "default_lines": "Default lines to analyze",
+          "default_levels": "Log levels to include",
+          "redaction_style": "Redaction style"
+        }
+      }
+    }
+  },
+  "services": {
+    "analyze_log": {
+      "name": "Analyze log",
+      "description": "Read the Home Assistant log, redact PII/secrets locally, send the redacted text to the configured LLM, and post a persistent notification with the analysis.",
+      "fields": {
+        "log_path": {
+          "name": "Log path",
+          "description": "Override the default <config>/home-assistant.log path."
+        },
+        "lines": {
+          "name": "Lines",
+          "description": "Number of last matching log entries to include."
+        },
+        "levels": {
+          "name": "Levels",
+          "description": "Log levels to include (e.g. WARNING, ERROR)."
+        },
+        "model": {
+          "name": "Model",
+          "description": "Override the default model for this single call."
+        }
+      }
+    },
+    "redact_text": {
+      "name": "Redact text",
+      "description": "Run the local redactor on a string and return the redacted text plus a count of findings.",
+      "fields": {
+        "text": {
+          "name": "Text",
+          "description": "The text to scan and redact."
+        },
+        "style": {
+          "name": "Style",
+          "description": "'typed' replaces with [KIND], 'fixed' replaces with [REDACTED]."
+        }
+      }
+    }
+  }
+}

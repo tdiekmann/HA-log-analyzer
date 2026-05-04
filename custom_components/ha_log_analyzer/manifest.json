@@ -1,0 +1,13 @@
+{
+  "domain": "ha_log_analyzer",
+  "name": "HA Log Analyzer",
+  "version": "0.1.0",
+  "documentation": "https://github.com/timdiekmann/HA-log-analyzer",
+  "issue_tracker": "https://github.com/timdiekmann/HA-log-analyzer/issues",
+  "codeowners": ["@timdiekmann"],
+  "config_flow": true,
+  "iot_class": "local_polling",
+  "integration_type": "service",
+  "requirements": ["aiohttp>=3.9"],
+  "dependencies": []
+}
