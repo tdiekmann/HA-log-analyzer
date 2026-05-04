@@ -1,11 +1,11 @@
 name: HA Log Analyzer
-version: "0.1.0"
+version: "0.1.1"
 slug: ha_log_analyzer
 description: >-
   Analyze your Home Assistant logs with AI. All secrets are redacted locally
   before being sent to any external service. Supports OpenRouter and any
   OpenAI-compatible API endpoint.
-url: https://github.com/timdiekmann/HA-log-analyzer
+url: https://github.com/tdiekmann/HA-log-analyzer
 arch:
   - aarch64
   - amd64
