@@ -1,5 +1,5 @@
 name: HA Log Analyzer
-version: "0.1.9"
+version: "0.2.0"
 slug: ha_log_analyzer
 description: >-
   Analyze your Home Assistant logs with AI. All secrets are redacted locally

@@ -96,83 +96,128 @@ def _load_options() -> dict:
         return {}
 
 
-async def _fetch_log_supervisor(session: aiohttp.ClientSession) -> str | None:
-    """Try HA Core REST API error_log endpoint (in-memory log handler, no file needed)."""
-    token = _supervisor_token()
-    if not token:
-        return None
-    headers = {"Authorization": f"Bearer {token}"}
-    url = f"{_SUPERVISOR_URL}/core/api/error_log"
+async def _get(
+    session: aiohttp.ClientSession,
+    url: str,
+    headers: dict,
+    timeout: int = 30,
+) -> tuple[str | None, str]:
+    """Return (body_text, error_detail). error_detail is empty on success."""
     try:
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-            if resp.status != 200:
-                _LOGGER.warning("core/api/error_log returned HTTP %d", resp.status)
-                return None
+        async with session.get(
+            url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)
+        ) as resp:
             text = await resp.text()
+            if resp.status != 200:
+                snippet = text[:200].replace("\n", " ")
+                return None, f"HTTP {resp.status}: {snippet}"
             if _looks_like_traceback(text):
-                _LOGGER.warning("core/api/error_log body looks like a Supervisor traceback, skipping")
-                return None
-            _LOGGER.info("Fetched %d bytes from core/api/error_log", len(text))
-            return _strip_ansi(text)
+                snippet = _strip_ansi(text)[:120].replace("\n", " ")
+                return None, f"Supervisor traceback in body: {snippet}"
+            return _strip_ansi(text), ""
     except Exception as exc:
-        _LOGGER.warning("core/api/error_log failed: %s", exc)
-        return None
+        return None, f"{type(exc).__name__}: {exc}"
 
 
-async def _fetch_log_host_journal(session: aiohttp.ClientSession) -> str | None:
-    """Try host journal endpoint, parse journald export format for HA entries."""
+async def _fetch_log_core_error_log(
+    session: aiohttp.ClientSession, errors: list[str]
+) -> str | None:
+    """HA Core REST API /api/error_log — in-memory handler, no disk file needed."""
     token = _supervisor_token()
     if not token:
+        errors.append("core/api/error_log: SUPERVISOR_TOKEN not set")
         return None
-    headers = {
+    hdrs = {"Authorization": f"Bearer {token}"}
+    text, err = await _get(session, f"{_SUPERVISOR_URL}/core/api/error_log", hdrs)
+    if text is not None:
+        _LOGGER.info("Fetched %d bytes from core/api/error_log", len(text))
+        return text
+    errors.append(f"core/api/error_log: {err}")
+    return None
+
+
+async def _fetch_log_ha_direct(
+    session: aiohttp.ClientSession, errors: list[str]
+) -> str | None:
+    """HA Core REST API called directly at http://homeassistant:8123."""
+    token = _supervisor_token()
+    if not token:
+        errors.append("homeassistant:8123/api/error_log: SUPERVISOR_TOKEN not set")
+        return None
+    hdrs = {"Authorization": f"Bearer {token}"}
+    text, err = await _get(session, "http://homeassistant:8123/api/error_log", hdrs)
+    if text is not None:
+        _LOGGER.info("Fetched %d bytes from homeassistant:8123/api/error_log", len(text))
+        return text
+    errors.append(f"homeassistant:8123/api/error_log: {err}")
+    return None
+
+
+async def _fetch_log_core_logs_identifier(
+    session: aiohttp.ClientSession, errors: list[str]
+) -> str | None:
+    """Supervisor /core/logs/identifiers/homeassistant (journald, HA-only entries)."""
+    token = _supervisor_token()
+    if not token:
+        errors.append("core/logs/identifiers/homeassistant: SUPERVISOR_TOKEN not set")
+        return None
+    hdrs = {"Authorization": f"Bearer {token}", "Accept": "text/plain"}
+    text, err = await _get(
+        session, f"{_SUPERVISOR_URL}/core/logs/identifiers/homeassistant", hdrs
+    )
+    if text is not None:
+        _LOGGER.info("Fetched %d bytes from core/logs/identifiers/homeassistant", len(text))
+        return text
+    errors.append(f"core/logs/identifiers/homeassistant: {err}")
+    return None
+
+
+async def _fetch_log_host_journal(
+    session: aiohttp.ClientSession, errors: list[str]
+) -> str | None:
+    """Supervisor /host/logs — journald export, filter for homeassistant entries."""
+    token = _supervisor_token()
+    if not token:
+        errors.append("host/logs: SUPERVISOR_TOKEN not set")
+        return None
+    hdrs = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.fdo.journal",
     }
-    url = f"{_SUPERVISOR_URL}/host/logs"
-    try:
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-            if resp.status != 200:
-                _LOGGER.warning("host/logs returned HTTP %d", resp.status)
-                return None
-            text = await resp.text()
-            if _looks_like_traceback(text):
-                _LOGGER.warning("host/logs body looks like a Supervisor traceback, skipping")
-                return None
-            parsed = _parse_journald_export(_strip_ansi(text))
-            if parsed.strip():
-                _LOGGER.info("Extracted %d chars from host/logs journal", len(parsed))
-                return parsed
-            _LOGGER.warning("host/logs: no HA entries found after journald parse")
-            return None
-    except Exception as exc:
-        _LOGGER.warning("host/logs failed: %s", exc)
-        return None
+    text, err = await _get(session, f"{_SUPERVISOR_URL}/host/logs", hdrs)
+    if text is not None:
+        parsed = _parse_journald_export(text)
+        if parsed.strip():
+            _LOGGER.info("Extracted %d chars from host/logs journal", len(parsed))
+            return parsed
+        err = "parsed OK but no homeassistant entries found"
+    errors.append(f"host/logs (journald): {err}")
+
+    # Retry with plain text in case the server ignores Accept header
+    hdrs2 = {"Authorization": f"Bearer {token}", "Accept": "text/plain"}
+    text2, err2 = await _get(session, f"{_SUPERVISOR_URL}/host/logs", hdrs2)
+    if text2 is not None:
+        _LOGGER.info("Fetched %d bytes from host/logs (plain)", len(text2))
+        return text2
+    errors.append(f"host/logs (plain): {err2}")
+    return None
 
 
-async def _fetch_log_core_logs(session: aiohttp.ClientSession) -> str | None:
-    """Try Supervisor /core/logs (plain text). Broken in some Supervisor versions."""
+async def _fetch_log_core_logs(
+    session: aiohttp.ClientSession, errors: list[str]
+) -> str | None:
+    """Supervisor /core/logs — broken in some Supervisor versions, kept as last resort."""
     token = _supervisor_token()
     if not token:
+        errors.append("core/logs: SUPERVISOR_TOKEN not set")
         return None
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "text/plain",
-    }
-    url = f"{_SUPERVISOR_URL}/core/logs"
-    try:
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-            if resp.status != 200:
-                _LOGGER.warning("core/logs returned HTTP %d", resp.status)
-                return None
-            text = await resp.text()
-            if _looks_like_traceback(text):
-                _LOGGER.warning("core/logs body looks like a Supervisor traceback, skipping")
-                return None
-            _LOGGER.info("Fetched %d bytes from core/logs", len(text))
-            return _strip_ansi(text)
-    except Exception as exc:
-        _LOGGER.warning("core/logs failed: %s", exc)
-        return None
+    hdrs = {"Authorization": f"Bearer {token}", "Accept": "text/plain"}
+    text, err = await _get(session, f"{_SUPERVISOR_URL}/core/logs", hdrs)
+    if text is not None:
+        _LOGGER.info("Fetched %d bytes from core/logs", len(text))
+        return text
+    errors.append(f"core/logs: {err}")
+    return None
 
 
 async def api_config(request: web.Request) -> web.Response:
@@ -188,19 +233,24 @@ async def api_config(request: web.Request) -> web.Response:
 
 
 async def api_fetch_log(request: web.Request) -> web.Response:
+    errors: list[str] = []
+
     async with aiohttp.ClientSession() as session:
-        # 1. HA Core REST API in-memory log (works even when no log file is written)
-        log_text = await _fetch_log_supervisor(session)
+        log_text = await _fetch_log_core_error_log(session, errors)
 
-        # 2. Host journal (journald export format, filter for homeassistant entries)
         if log_text is None:
-            log_text = await _fetch_log_host_journal(session)
+            log_text = await _fetch_log_ha_direct(session, errors)
 
-        # 3. Supervisor native /core/logs (broken in some versions but worth trying)
         if log_text is None:
-            log_text = await _fetch_log_core_logs(session)
+            log_text = await _fetch_log_core_logs_identifier(session, errors)
 
-    # 4. Filesystem fallback (works on non-HAOS or older installs)
+        if log_text is None:
+            log_text = await _fetch_log_host_journal(session, errors)
+
+        if log_text is None:
+            log_text = await _fetch_log_core_logs(session, errors)
+
+    # Filesystem fallback (non-HAOS or older installs)
     if log_text is None:
         log_path = _find_log_file()
         if log_path is not None:
@@ -208,19 +258,17 @@ async def api_fetch_log(request: web.Request) -> web.Response:
                 log_text = log_path.read_text(errors="replace")
                 _LOGGER.info("Read %d bytes from %s", len(log_text), log_path)
             except OSError as exc:
-                log_text = None
-                _LOGGER.warning("Could not read %s: %s", log_path, exc)
+                errors.append(f"file {log_path}: {exc}")
+        else:
+            errors.append(
+                "filesystem: not found — checked "
+                + ", ".join(str(p) for p in _LOG_CANDIDATES)
+            )
 
     if log_text is None:
+        detail = " | ".join(errors) if errors else "no sources attempted"
         return web.json_response(
-            {
-                "error": (
-                    "Could not retrieve logs. Tried: Supervisor /core/api/error_log, "
-                    "/host/logs (journald), /core/logs, and filesystem paths "
-                    + ", ".join(str(p) for p in _LOG_CANDIDATES)
-                    + ". Check add-on logs for details."
-                )
-            },
+            {"error": f"Could not retrieve logs. Details: {detail}"},
             status=503,
         )
 
