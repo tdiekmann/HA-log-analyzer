@@ -43,6 +43,13 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 # journald export block separator
 _JOURNALD_HA_ID = "homeassistant"
 
+# Syslog-format line from plain-text journald output:
+#   2026-05-05 03:13:39.915 hostname service[pid]: message body
+_SYSLOG_LINE_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?\s+\S+\s+([^\s\[]+)(?:\[\d+\])?: (.*)",
+    re.MULTILINE,
+)
+
 
 def _supervisor_token() -> str:
     return os.environ.get("SUPERVISOR_TOKEN", "")
@@ -50,6 +57,19 @@ def _supervisor_token() -> str:
 
 def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
+
+
+def _filter_syslog_for_ha(text: str) -> str:
+    """From plain syslog output keep only homeassistant entries, returning the message body.
+
+    Each syslog line:  timestamp hostname homeassistant[pid]: <HA log line>
+    We strip the header so the HA log parser sees the bare HA-format line.
+    """
+    lines: list[str] = []
+    for m in _SYSLOG_LINE_RE.finditer(text):
+        if m.group(1) == "homeassistant":
+            lines.append(m.group(2))
+    return "\n".join(lines)
 
 
 def _parse_journald_export(raw: str) -> str:
@@ -149,8 +169,14 @@ async def _fetch_log_core_logs_identifier(
         session, f"{_SUPERVISOR_URL}/core/logs/identifiers/homeassistant", hdrs
     )
     if text is not None:
-        _LOGGER.info("Fetched %d bytes from core/logs/identifiers/homeassistant", len(text))
-        return text
+        # Output is syslog-format with homeassistant header; strip it to get bare HA log lines
+        stripped = _filter_syslog_for_ha(text)
+        result = stripped if stripped.strip() else text
+        _LOGGER.info(
+            "Fetched %d bytes from core/logs/identifiers/homeassistant (%d after syslog strip)",
+            len(text), len(result),
+        )
+        return result
     errors.append(f"core/logs/identifiers/homeassistant: {err}")
     return None
 
@@ -176,12 +202,18 @@ async def _fetch_log_host_journal(
         err = "parsed OK but no homeassistant entries found"
     errors.append(f"host/logs (journald): {err}")
 
-    # Retry with plain text in case the server ignores Accept header
+    # Retry with plain text — full syslog output; filter to homeassistant entries only
     hdrs2 = {"Authorization": f"Bearer {token}", "Accept": "text/plain"}
     text2, err2 = await _get(session, f"{_SUPERVISOR_URL}/host/logs", hdrs2)
     if text2 is not None:
-        _LOGGER.info("Fetched %d bytes from host/logs (plain)", len(text2))
-        return text2
+        filtered = _filter_syslog_for_ha(text2)
+        if filtered.strip():
+            _LOGGER.info(
+                "Extracted %d chars of HA entries from host/logs plain (%d total)",
+                len(filtered), len(text2),
+            )
+            return filtered
+        err2 = "no homeassistant entries found in syslog output"
     errors.append(f"host/logs (plain): {err2}")
     return None
 
