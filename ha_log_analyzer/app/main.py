@@ -123,10 +123,26 @@ def _parse_journald_export(raw: str) -> str:
     return "\n".join(lines)
 
 
-def _looks_like_traceback(text: str) -> bool:
-    """Return True if the response body looks like a Supervisor internal error."""
-    stripped = _strip_ansi(text)
-    return "Traceback (most recent call last)" in stripped or "AttributeError:" in stripped
+def _looks_like_supervisor_error(text: str) -> bool:
+    """Return True only if the response is a Supervisor internal error, not real HA logs.
+
+    Real HA logs often contain Python tracebacks from logged exceptions — we must
+    not discard them just because "Traceback" appears somewhere in the body.
+    A genuine Supervisor crash response starts with the error near the top and
+    contains no HA-format log lines at all.
+    """
+    stripped = _strip_ansi(text).lstrip()
+    early = stripped[:600]
+    has_early_error = (
+        early.startswith("^") or early.startswith("~")
+        or "Traceback (most recent call last)" in early
+        or "AttributeError:" in early[:200]
+        or "Exception:" in early[:200]
+    )
+    if not has_early_error:
+        return False
+    # If genuine HA log lines exist anywhere, keep the content
+    return not bool(_HA_MSG_RE.search(stripped))
 
 
 def _find_log_file() -> Path | None:
@@ -158,7 +174,7 @@ async def _get(
             if resp.status != 200:
                 snippet = text[:200].replace("\n", " ")
                 return None, f"HTTP {resp.status}: {snippet}"
-            if _looks_like_traceback(text):
+            if _looks_like_supervisor_error(text):
                 snippet = _strip_ansi(text)[:120].replace("\n", " ")
                 return None, f"Supervisor traceback in body: {snippet}"
             return _strip_ansi(text), ""
@@ -241,17 +257,24 @@ async def _fetch_log_host_journal(
 async def _fetch_log_core_logs(
     session: aiohttp.ClientSession, errors: list[str]
 ) -> str | None:
-    """Supervisor /core/logs — broken in some Supervisor versions, kept as last resort."""
+    """Supervisor /core/logs — primary container-log source for HA OS 2026.04+."""
     token = _supervisor_token()
     if not token:
         errors.append("core/logs: SUPERVISOR_TOKEN not set")
         return None
-    hdrs = {"Authorization": f"Bearer {token}", "Accept": "text/plain"}
-    text, err = await _get(session, f"{_SUPERVISOR_URL}/core/logs", hdrs)
-    if text is not None:
-        _LOGGER.info("Fetched %d bytes from core/logs", len(text))
-        return text
-    errors.append(f"core/logs: {err}")
+    for accept in ("text/x-log", "text/plain"):
+        hdrs = {"Authorization": f"Bearer {token}", "Accept": accept}
+        text, err = await _get(session, f"{_SUPERVISOR_URL}/core/logs", hdrs)
+        if text is not None:
+            # May be bare HA log format or syslog-wrapped; try syslog strip first
+            stripped, dbg = _filter_syslog_for_ha(text)
+            result = stripped if stripped.strip() else text
+            _LOGGER.info(
+                "Fetched %d bytes from core/logs (%s, %d usable, %s)",
+                len(text), accept, len(result), dbg,
+            )
+            return result
+        errors.append(f"core/logs ({accept}): {err}")
     return None
 
 
@@ -305,11 +328,13 @@ async def api_fetch_log(request: web.Request) -> web.Response:
         if log_text is None:
             log_text = await _fetch_log_core_logs_identifier(session, errors)
 
-        if log_text is None:
-            log_text = await _fetch_log_host_journal(session, errors)
-
+        # /core/logs is the primary container-log source; try before host journal
+        # (host/logs only contains host-level services, not HA Core container logs)
         if log_text is None:
             log_text = await _fetch_log_core_logs(session, errors)
+
+        if log_text is None:
+            log_text = await _fetch_log_host_journal(session, errors)
 
     # Filesystem fallback (non-HAOS or older installs)
     if log_text is None:
