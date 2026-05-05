@@ -136,23 +136,6 @@ async def _fetch_log_core_error_log(
     return None
 
 
-async def _fetch_log_ha_direct(
-    session: aiohttp.ClientSession, errors: list[str]
-) -> str | None:
-    """HA Core REST API called directly at http://homeassistant:8123."""
-    token = _supervisor_token()
-    if not token:
-        errors.append("homeassistant:8123/api/error_log: SUPERVISOR_TOKEN not set")
-        return None
-    hdrs = {"Authorization": f"Bearer {token}"}
-    text, err = await _get(session, "http://homeassistant:8123/api/error_log", hdrs)
-    if text is not None:
-        _LOGGER.info("Fetched %d bytes from homeassistant:8123/api/error_log", len(text))
-        return text
-    errors.append(f"homeassistant:8123/api/error_log: {err}")
-    return None
-
-
 async def _fetch_log_core_logs_identifier(
     session: aiohttp.ClientSession, errors: list[str]
 ) -> str | None:
@@ -237,9 +220,6 @@ async def api_fetch_log(request: web.Request) -> web.Response:
 
     async with aiohttp.ClientSession() as session:
         log_text = await _fetch_log_core_error_log(session, errors)
-
-        if log_text is None:
-            log_text = await _fetch_log_ha_direct(session, errors)
 
         if log_text is None:
             log_text = await _fetch_log_core_logs_identifier(session, errors)
