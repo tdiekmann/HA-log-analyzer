@@ -4,16 +4,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-from pathlib import Path
-
 import re
+from pathlib import Path
 
 import aiohttp
 import markdown as md_lib
 from aiohttp import web
-
-# Docker log timestamps: 2026-05-04T15:51:51.879054321Z (nanoseconds + Z)
-_DOCKER_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+")
 
 from analyzer import AnalyzerError, analyze
 from ha_log import filter_entries, parse_text, to_text
@@ -33,6 +29,44 @@ _DEFAULTS = {
     "default_levels": ["WARNING", "ERROR", "CRITICAL"],
     "redaction_style": "typed",
 }
+
+# Docker log timestamp prefix: 2026-05-04T15:51:51.879054321Z<space>
+_DOCKER_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+")
+# Journald export format: KEY=value blocks separated by blank lines
+_JOURNALD_KEY_RE = re.compile(r"^[A-Z_]+=")
+
+
+def _normalise_supervisor_log(raw: str) -> str:
+    """Convert whatever format the Supervisor returns into plain HA log text.
+
+    Handles:
+    - Standard HA log text (no-op)
+    - Docker log timestamps prefixed to each line
+    - systemd journal export format (KEY=VALUE blocks, extract MESSAGE=)
+    """
+    lines = raw.splitlines()
+    if not lines:
+        return raw
+
+    first = lines[0]
+    _LOGGER.info("Log format sample (first line): %r", first[:120])
+
+    # Docker timestamp prefix
+    if _DOCKER_TS_RE.match(first):
+        _LOGGER.info("Detected Docker timestamp prefix — stripping")
+        return "\n".join(_DOCKER_TS_RE.sub("", l) for l in lines)
+
+    # systemd journal export: majority of lines are KEY=VALUE
+    kv_count = sum(1 for l in lines[:20] if _JOURNALD_KEY_RE.match(l))
+    if kv_count >= 3:
+        _LOGGER.info("Detected journald export format — extracting MESSAGE fields")
+        extracted: list[str] = []
+        for line in lines:
+            if line.startswith("MESSAGE="):
+                extracted.append(line[len("MESSAGE="):])
+        return "\n".join(extracted)
+
+    return raw
 
 
 def _load_options() -> dict:
@@ -81,11 +115,7 @@ async def api_fetch_log(request: web.Request) -> web.Response:
     except aiohttp.ClientError as exc:
         return web.json_response({"error": f"Could not reach Supervisor: {exc}"}, status=502)
 
-    # Strip Docker log timestamp prefixes when present
-    lines = log_text.splitlines()
-    if lines and _DOCKER_TS_RE.match(lines[0]):
-        log_text = "\n".join(_DOCKER_TS_RE.sub("", line) for line in lines)
-
+    log_text = _normalise_supervisor_log(log_text)
     return web.json_response({"log_text": log_text})
 
 
@@ -122,13 +152,13 @@ async def api_analyze(request: web.Request) -> web.Response:
     if not raw_text.strip():
         found_levels = sorted({e.level for e in entries if e.level})
         total = len(entries)
-        sample = "\n".join(log_text.splitlines()[:3])
+        sample = repr("\n".join(log_text.splitlines()[:3]))
         if total == 0:
-            detail = f"The log appears to be empty. Sample received: {sample!r}"
+            detail = f"The log appears to be empty. Raw sample: {sample}"
         elif not found_levels:
             detail = (
                 f"{total} lines received but none matched the expected log format. "
-                f"First lines: {sample!r}"
+                f"Raw sample: {sample}"
             )
         else:
             detail = (
