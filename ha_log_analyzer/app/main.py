@@ -6,9 +6,14 @@ import logging
 import os
 from pathlib import Path
 
+import re
+
 import aiohttp
 import markdown as md_lib
 from aiohttp import web
+
+# Docker log timestamps: 2026-05-04T15:51:51.879054321Z (nanoseconds + Z)
+_DOCKER_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+")
 
 from analyzer import AnalyzerError, analyze
 from ha_log import filter_entries, parse_text, to_text
@@ -76,6 +81,11 @@ async def api_fetch_log(request: web.Request) -> web.Response:
     except aiohttp.ClientError as exc:
         return web.json_response({"error": f"Could not reach Supervisor: {exc}"}, status=502)
 
+    # Strip Docker log timestamp prefixes when present
+    lines = log_text.splitlines()
+    if lines and _DOCKER_TS_RE.match(lines[0]):
+        log_text = "\n".join(_DOCKER_TS_RE.sub("", line) for line in lines)
+
     return web.json_response({"log_text": log_text})
 
 
@@ -112,13 +122,13 @@ async def api_analyze(request: web.Request) -> web.Response:
     if not raw_text.strip():
         found_levels = sorted({e.level for e in entries if e.level})
         total = len(entries)
+        sample = "\n".join(log_text.splitlines()[:3])
         if total == 0:
-            detail = "The log appears to be empty."
+            detail = f"The log appears to be empty. Sample received: {sample!r}"
         elif not found_levels:
             detail = (
-                f"{total} lines were received but none matched the expected log format "
-                f"(timestamp + level + logger). The Supervisor may have returned a "
-                f"structured/binary format — try uploading the log file directly instead."
+                f"{total} lines received but none matched the expected log format. "
+                f"First lines: {sample!r}"
             )
         else:
             detail = (
