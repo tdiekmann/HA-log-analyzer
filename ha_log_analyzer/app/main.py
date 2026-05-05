@@ -235,6 +235,35 @@ async def _fetch_log_core_logs(
     return None
 
 
+async def api_models(request: web.Request) -> web.Response:
+    opts = _load_options()
+    api_key = opts.get("api_key", "").strip()
+    base_url = opts.get("base_url", _DEFAULTS["base_url"])
+
+    if not api_key:
+        return web.json_response({"models": []})
+
+    url = base_url.rstrip("/") + "/models"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status != 200:
+                    return web.json_response({"models": []})
+                data = await resp.json(content_type=None)
+    except Exception:
+        return web.json_response({"models": []})
+
+    raw = data.get("data", [])
+    models = sorted(
+        [{"id": m["id"], "name": m.get("name", m["id"])} for m in raw if "id" in m],
+        key=lambda m: m["id"],
+    )
+    return web.json_response({"models": models})
+
+
 async def api_config(request: web.Request) -> web.Response:
     opts = _load_options()
     return web.json_response({
@@ -386,6 +415,7 @@ async def _index(request: web.Request) -> web.Response:
 def _create_app() -> web.Application:
     app = web.Application(client_max_size=50 * 1024 * 1024)
     app.router.add_get("/api/config", api_config)
+    app.router.add_get("/api/models", api_models)
     app.router.add_get("/api/log", api_fetch_log)
     app.router.add_post("/api/analyze", api_analyze)
     app.router.add_static("/static", _STATIC_DIR, name="static")

@@ -117,8 +117,8 @@
       gap: 0.5rem;
     }
 
-    input[type="number"] {
-      width: 5.5rem;
+    input[type="number"],
+    input[type="text"].model-input {
       padding: 0.3rem 0.5rem;
       background: var(--bg);
       border: 1px solid var(--border);
@@ -126,7 +126,21 @@
       color: var(--text);
       font-size: 0.875rem;
     }
-    input[type="number"]:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
+    input[type="number"] { width: 5.5rem; }
+    input[type="text"].model-input { width: 19rem; font-family: 'SFMono-Regular', Consolas, monospace; }
+    input[type="number"]:focus,
+    input[type="text"].model-input:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
+
+    .model-wrap { position: relative; display: flex; align-items: center; }
+    .model-loading {
+      position: absolute;
+      right: 0.5rem;
+      width: 12px; height: 12px;
+      border: 1.5px solid var(--border);
+      border-top-color: var(--primary);
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+    }
 
     .level-checks {
       display: flex;
@@ -375,6 +389,15 @@
   <!-- Options -->
   <div class="options-bar">
     <div class="opt-group">
+      <span class="opt-label">Model</span>
+      <div class="model-wrap">
+        <input type="text" id="model-input" class="model-input" list="model-list"
+               placeholder="e.g. anthropic/claude-haiku-4-5" autocomplete="off" spellcheck="false">
+        <datalist id="model-list"></datalist>
+        <div class="model-loading hidden" id="model-loading"></div>
+      </div>
+    </div>
+    <div class="opt-group">
       <span class="opt-label">Lines</span>
       <input type="number" id="lines" value="500" min="10" max="20000" step="50">
     </div>
@@ -403,8 +426,8 @@
         Live Analysis
       </div>
       <p class="panel-desc">
-        Fetch the current <code>home-assistant.log</code> directly from the
-        Supervisor and analyze it. No file needed.
+        Fetch the current log directly from the Supervisor and analyze it.
+        No file needed.
       </p>
       <button class="btn btn-primary" id="btn-live">
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -521,9 +544,9 @@
         apiBadge.className = 'badge badge-warn';
       }
 
-      const modelBadge = document.getElementById('model-badge');
-      modelBadge.textContent = cfg.model;
-      modelBadge.style.display = '';
+      const modelInput = document.getElementById('model-input');
+      modelInput.value = cfg.model || '';
+      syncModelBadge();
 
       document.getElementById('lines').value = cfg.default_lines || 500;
 
@@ -532,6 +555,36 @@
         cb.checked = defaultLevels.includes(cb.value);
       });
     } catch (_) { /* non-fatal */ }
+  }
+
+  function syncModelBadge() {
+    const val = document.getElementById('model-input').value.trim();
+    const badge = document.getElementById('model-badge');
+    badge.textContent = val || '—';
+    badge.style.display = val ? '' : 'none';
+  }
+
+  document.getElementById('model-input').addEventListener('input', syncModelBadge);
+
+  // ── model list ─────────────────────────────────────────────────────────────
+  async function loadModels() {
+    const spinner = document.getElementById('model-loading');
+    spinner.classList.remove('hidden');
+    try {
+      const resp = await fetch(apiUrl('api/models'));
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const dl = document.getElementById('model-list');
+      dl.innerHTML = '';
+      (data.models || []).forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        opt.label = m.name !== m.id ? m.name : '';
+        dl.appendChild(opt);
+      });
+    } catch (_) { /* non-fatal */ } finally {
+      spinner.classList.add('hidden');
+    }
   }
 
   // ── show results ───────────────────────────────────────────────────────────
@@ -566,6 +619,7 @@
 
   // ── analyze (shared) ───────────────────────────────────────────────────────
   async function runAnalyze(logText) {
+    const model = document.getElementById('model-input').value.trim();
     const resp = await fetch(apiUrl('api/analyze'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -573,6 +627,7 @@
         log_text: logText,
         lines: parseInt(document.getElementById('lines').value, 10) || 500,
         levels: getSelectedLevels(),
+        ...(model && { model }),
       }),
     });
     const result = await resp.json();
@@ -645,6 +700,7 @@
 
   // ── init ───────────────────────────────────────────────────────────────────
   loadConfig();
+  loadModels();
 </script>
 </body>
 </html>
