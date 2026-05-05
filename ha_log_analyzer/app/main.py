@@ -55,13 +55,16 @@ async def api_fetch_log(request: web.Request) -> web.Response:
             {"error": "SUPERVISOR_TOKEN not set — is the add-on running inside Home Assistant?"},
             status=503,
         )
-    headers = {"Authorization": f"Bearer {_SUPERVISOR_TOKEN}"}
+    headers = {
+        "Authorization": f"Bearer {_SUPERVISOR_TOKEN}",
+        "Accept": "text/plain",
+    }
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 "http://supervisor/core/logs",
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=30),
+                timeout=aiohttp.ClientTimeout(total=60),
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
@@ -105,6 +108,24 @@ async def api_analyze(request: web.Request) -> web.Response:
     entries = parse_text(log_text)
     filtered = filter_entries(entries, levels, lines)
     raw_text = to_text(filtered)
+
+    if not raw_text.strip():
+        found_levels = sorted({e.level for e in entries if e.level})
+        total = len(entries)
+        if total == 0:
+            detail = "The log appears to be empty."
+        elif not found_levels:
+            detail = (
+                f"{total} lines were received but none matched the expected log format "
+                f"(timestamp + level + logger). The Supervisor may have returned a "
+                f"structured/binary format — try uploading the log file directly instead."
+            )
+        else:
+            detail = (
+                f"{total} entries parsed; levels present: {', '.join(found_levels)}. "
+                f"None matched the selected filter: {', '.join(levels)}."
+            )
+        return web.json_response({"error": detail}, status=400)
 
     detections = detect(raw_text)
     merged_detections = merge(detections)
