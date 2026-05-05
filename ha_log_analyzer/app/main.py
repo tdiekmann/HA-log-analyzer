@@ -59,7 +59,7 @@ async def api_fetch_log(request: web.Request) -> web.Response:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                "http://supervisor/core/api/error_log",
+                "http://supervisor/core/logs",
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
