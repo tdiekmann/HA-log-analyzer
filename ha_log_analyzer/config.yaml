@@ -1,5 +1,5 @@
 name: HA Log Analyzer
-version: "0.1.7"
+version: "0.1.8"
 slug: ha_log_analyzer
 description: >-
   Analyze your Home Assistant logs with AI. All secrets are redacted locally
@@ -15,9 +15,11 @@ arch:
 
 ingress: true
 ingress_port: 8099
-homeassistant_api: true
 hassio_api: true
-hassio_role: manager
+hassio_role: default
+
+map:
+  - config:r
 
 panel_icon: mdi:magnify-scan
 panel_title: Log Analyzer

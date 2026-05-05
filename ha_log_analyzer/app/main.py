@@ -20,7 +20,6 @@ _LOGGER = logging.getLogger(__name__)
 
 _OPTIONS_FILE = Path("/data/options.json")
 _STATIC_DIR = Path(__file__).parent / "static"
-_SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
 
 _DEFAULTS = {
     "model": "anthropic/claude-haiku-4-5",
@@ -30,43 +29,18 @@ _DEFAULTS = {
     "redaction_style": "typed",
 }
 
-# Docker log timestamp prefix: 2026-05-04T15:51:51.879054321Z<space>
-_DOCKER_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+")
-# Journald export format: KEY=value blocks separated by blank lines
-_JOURNALD_KEY_RE = re.compile(r"^[A-Z_]+=")
+# HA mounts the config dir at /config (HAOS) or /homeassistant (older installs)
+_LOG_CANDIDATES = [
+    Path("/config/home-assistant.log"),
+    Path("/homeassistant/home-assistant.log"),
+]
 
 
-def _normalise_supervisor_log(raw: str) -> str:
-    """Convert whatever format the Supervisor returns into plain HA log text.
-
-    Handles:
-    - Standard HA log text (no-op)
-    - Docker log timestamps prefixed to each line
-    - systemd journal export format (KEY=VALUE blocks, extract MESSAGE=)
-    """
-    lines = raw.splitlines()
-    if not lines:
-        return raw
-
-    first = lines[0]
-    _LOGGER.info("Log format sample (first line): %r", first[:120])
-
-    # Docker timestamp prefix
-    if _DOCKER_TS_RE.match(first):
-        _LOGGER.info("Detected Docker timestamp prefix — stripping")
-        return "\n".join(_DOCKER_TS_RE.sub("", l) for l in lines)
-
-    # systemd journal export: majority of lines are KEY=VALUE
-    kv_count = sum(1 for l in lines[:20] if _JOURNALD_KEY_RE.match(l))
-    if kv_count >= 3:
-        _LOGGER.info("Detected journald export format — extracting MESSAGE fields")
-        extracted: list[str] = []
-        for line in lines:
-            if line.startswith("MESSAGE="):
-                extracted.append(line[len("MESSAGE="):])
-        return "\n".join(extracted)
-
-    return raw
+def _find_log_file() -> Path | None:
+    for p in _LOG_CANDIDATES:
+        if p.exists():
+            return p
+    return None
 
 
 def _load_options() -> dict:
@@ -89,33 +63,19 @@ async def api_config(request: web.Request) -> web.Response:
 
 
 async def api_fetch_log(request: web.Request) -> web.Response:
-    if not _SUPERVISOR_TOKEN:
+    log_path = _find_log_file()
+    if log_path is None:
+        checked = ", ".join(str(p) for p in _LOG_CANDIDATES)
         return web.json_response(
-            {"error": "SUPERVISOR_TOKEN not set — is the add-on running inside Home Assistant?"},
-            status=503,
+            {"error": f"Log file not found. Checked: {checked}"},
+            status=404,
         )
-    headers = {
-        "Authorization": f"Bearer {_SUPERVISOR_TOKEN}",
-        "Accept": "text/plain",
-    }
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "http://supervisor/core/logs",
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    return web.json_response(
-                        {"error": f"Supervisor returned HTTP {resp.status}: {body[:200]}"},
-                        status=502,
-                    )
-                log_text = await resp.text()
-    except aiohttp.ClientError as exc:
-        return web.json_response({"error": f"Could not reach Supervisor: {exc}"}, status=502)
+        log_text = log_path.read_text(errors="replace")
+    except OSError as exc:
+        return web.json_response({"error": f"Could not read log file: {exc}"}, status=500)
 
-    log_text = _normalise_supervisor_log(log_text)
+    _LOGGER.info("Read %d bytes from %s", len(log_text), log_path)
     return web.json_response({"log_text": log_text})
 
 
