@@ -18,12 +18,15 @@ _LOGGER = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
     "You are an expert Home Assistant troubleshooter. "
-    "You will be given a log file from a Home Assistant installation. "
+    "You will be given a preamble with the current time and log time range, followed by "
+    "a log excerpt from a Home Assistant installation. "
     "Sensitive values have already been replaced with bracketed placeholders such as "
     "[PASSWORD], [TOKEN], [EMAIL], [IP_ADDRESS], [API_KEY]. Treat those tokens as opaque. "
     "Analyze the log, identify the most important issues (ranked by severity), and for "
     "each one provide: a short title, the affected integration / component, the likely "
-    "root cause, and a concrete recommended fix. "
+    "root cause, a concrete recommended fix, and a **Last seen** line showing the "
+    "timestamp of the most recent log entry for that issue and its age relative to the "
+    "current time given in the preamble (e.g. 'Last seen: 2026-05-05 10:28:55 · 2m ago'). "
     "Prefer brevity. Respond in Markdown with one H2 per issue."
 )
 

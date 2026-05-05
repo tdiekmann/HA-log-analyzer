@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 
 import aiohttp
@@ -157,6 +158,43 @@ def _load_options() -> dict:
         return json.loads(_OPTIONS_FILE.read_text())
     except Exception:
         return {}
+
+
+def _parse_log_ts(ts: str) -> datetime | None:
+    try:
+        # Accept "2026-05-05 10:30:45.123" or "2026-05-05T10:30:45"
+        return datetime.fromisoformat(ts.replace("T", " ").split(".")[0])
+    except ValueError:
+        return None
+
+
+def _age_str(dt: datetime, now: datetime) -> str:
+    s = max(0, int((now - dt).total_seconds()))
+    if s < 60:
+        return f"{s}s ago"
+    if s < 3600:
+        m, sec = divmod(s, 60)
+        return f"{m}m {sec}s ago"
+    if s < 86400:
+        h, rem = divmod(s, 3600)
+        return f"{h}h {rem // 60}m ago"
+    d, rem = divmod(s, 86400)
+    return f"{d}d {rem // 3600}h ago"
+
+
+def _log_time_context(filtered: list, now: datetime) -> str:
+    """Build a short preamble describing the log's time range relative to now."""
+    timestamps = [_parse_log_ts(e.timestamp) for e in filtered if e.timestamp]
+    timestamps = [t for t in timestamps if t is not None]
+    if not timestamps:
+        return f"Current time: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+    first, last = timestamps[0], timestamps[-1]
+    return (
+        f"Current time: {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"Log range: {first.strftime('%Y-%m-%d %H:%M:%S')} → "
+        f"{last.strftime('%Y-%m-%d %H:%M:%S')} "
+        f"(most recent entry: {_age_str(last, now)})"
+    )
 
 
 async def _get(
@@ -418,6 +456,8 @@ async def api_analyze(request: web.Request) -> web.Response:
     for det in merged_detections:
         kinds[det.kind] = kinds.get(det.kind, 0) + 1
 
+    time_context = _log_time_context(filtered, datetime.now())
+
     base_url: str = opts.get("base_url", _DEFAULTS["base_url"])
     try:
         async with aiohttp.ClientSession() as session:
@@ -427,6 +467,7 @@ async def api_analyze(request: web.Request) -> web.Response:
                 model=model,
                 base_url=base_url,
                 session=session,
+                extra_instructions=time_context,
             )
     except AnalyzerError as exc:
         return web.json_response({"error": str(exc)}, status=502)
