@@ -29,11 +29,57 @@ _DEFAULTS = {
     "redaction_style": "typed",
 }
 
-# HA mounts the config dir at /config (HAOS) or /homeassistant (older installs)
+_SUPERVISOR_URL = "http://supervisor"
+
+# Fallback: HA mounts the config dir at /config (HAOS) or /homeassistant
 _LOG_CANDIDATES = [
     Path("/config/home-assistant.log"),
     Path("/homeassistant/home-assistant.log"),
 ]
+
+# ANSI escape strip
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+# journald export block separator
+_JOURNALD_HA_ID = "homeassistant"
+
+
+def _supervisor_token() -> str:
+    return os.environ.get("SUPERVISOR_TOKEN", "")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
+def _parse_journald_export(raw: str) -> str:
+    """Extract HA log lines from journald export format (KEY=VALUE blocks)."""
+    lines: list[str] = []
+    block: dict[str, str] = {}
+    for line in raw.splitlines():
+        if line == "":
+            syslog_id = block.get("SYSLOG_IDENTIFIER", "")
+            if syslog_id == _JOURNALD_HA_ID or not syslog_id:
+                msg = block.get("MESSAGE", "")
+                if msg:
+                    lines.append(msg)
+            block = {}
+        elif "=" in line:
+            key, _, val = line.partition("=")
+            block[key] = val
+    # handle last block without trailing blank line
+    syslog_id = block.get("SYSLOG_IDENTIFIER", "")
+    if (syslog_id == _JOURNALD_HA_ID or not syslog_id):
+        msg = block.get("MESSAGE", "")
+        if msg:
+            lines.append(msg)
+    return "\n".join(lines)
+
+
+def _looks_like_traceback(text: str) -> bool:
+    """Return True if the response body looks like a Supervisor internal error."""
+    stripped = _strip_ansi(text)
+    return "Traceback (most recent call last)" in stripped or "AttributeError:" in stripped
 
 
 def _find_log_file() -> Path | None:
@@ -50,6 +96,85 @@ def _load_options() -> dict:
         return {}
 
 
+async def _fetch_log_supervisor(session: aiohttp.ClientSession) -> str | None:
+    """Try HA Core REST API error_log endpoint (in-memory log handler, no file needed)."""
+    token = _supervisor_token()
+    if not token:
+        return None
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"{_SUPERVISOR_URL}/core/api/error_log"
+    try:
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            if resp.status != 200:
+                _LOGGER.warning("core/api/error_log returned HTTP %d", resp.status)
+                return None
+            text = await resp.text()
+            if _looks_like_traceback(text):
+                _LOGGER.warning("core/api/error_log body looks like a Supervisor traceback, skipping")
+                return None
+            _LOGGER.info("Fetched %d bytes from core/api/error_log", len(text))
+            return _strip_ansi(text)
+    except Exception as exc:
+        _LOGGER.warning("core/api/error_log failed: %s", exc)
+        return None
+
+
+async def _fetch_log_host_journal(session: aiohttp.ClientSession) -> str | None:
+    """Try host journal endpoint, parse journald export format for HA entries."""
+    token = _supervisor_token()
+    if not token:
+        return None
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.fdo.journal",
+    }
+    url = f"{_SUPERVISOR_URL}/host/logs"
+    try:
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            if resp.status != 200:
+                _LOGGER.warning("host/logs returned HTTP %d", resp.status)
+                return None
+            text = await resp.text()
+            if _looks_like_traceback(text):
+                _LOGGER.warning("host/logs body looks like a Supervisor traceback, skipping")
+                return None
+            parsed = _parse_journald_export(_strip_ansi(text))
+            if parsed.strip():
+                _LOGGER.info("Extracted %d chars from host/logs journal", len(parsed))
+                return parsed
+            _LOGGER.warning("host/logs: no HA entries found after journald parse")
+            return None
+    except Exception as exc:
+        _LOGGER.warning("host/logs failed: %s", exc)
+        return None
+
+
+async def _fetch_log_core_logs(session: aiohttp.ClientSession) -> str | None:
+    """Try Supervisor /core/logs (plain text). Broken in some Supervisor versions."""
+    token = _supervisor_token()
+    if not token:
+        return None
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "text/plain",
+    }
+    url = f"{_SUPERVISOR_URL}/core/logs"
+    try:
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            if resp.status != 200:
+                _LOGGER.warning("core/logs returned HTTP %d", resp.status)
+                return None
+            text = await resp.text()
+            if _looks_like_traceback(text):
+                _LOGGER.warning("core/logs body looks like a Supervisor traceback, skipping")
+                return None
+            _LOGGER.info("Fetched %d bytes from core/logs", len(text))
+            return _strip_ansi(text)
+    except Exception as exc:
+        _LOGGER.warning("core/logs failed: %s", exc)
+        return None
+
+
 async def api_config(request: web.Request) -> web.Response:
     opts = _load_options()
     return web.json_response({
@@ -63,19 +188,42 @@ async def api_config(request: web.Request) -> web.Response:
 
 
 async def api_fetch_log(request: web.Request) -> web.Response:
-    log_path = _find_log_file()
-    if log_path is None:
-        checked = ", ".join(str(p) for p in _LOG_CANDIDATES)
-        return web.json_response(
-            {"error": f"Log file not found. Checked: {checked}"},
-            status=404,
-        )
-    try:
-        log_text = log_path.read_text(errors="replace")
-    except OSError as exc:
-        return web.json_response({"error": f"Could not read log file: {exc}"}, status=500)
+    async with aiohttp.ClientSession() as session:
+        # 1. HA Core REST API in-memory log (works even when no log file is written)
+        log_text = await _fetch_log_supervisor(session)
 
-    _LOGGER.info("Read %d bytes from %s", len(log_text), log_path)
+        # 2. Host journal (journald export format, filter for homeassistant entries)
+        if log_text is None:
+            log_text = await _fetch_log_host_journal(session)
+
+        # 3. Supervisor native /core/logs (broken in some versions but worth trying)
+        if log_text is None:
+            log_text = await _fetch_log_core_logs(session)
+
+    # 4. Filesystem fallback (works on non-HAOS or older installs)
+    if log_text is None:
+        log_path = _find_log_file()
+        if log_path is not None:
+            try:
+                log_text = log_path.read_text(errors="replace")
+                _LOGGER.info("Read %d bytes from %s", len(log_text), log_path)
+            except OSError as exc:
+                log_text = None
+                _LOGGER.warning("Could not read %s: %s", log_path, exc)
+
+    if log_text is None:
+        return web.json_response(
+            {
+                "error": (
+                    "Could not retrieve logs. Tried: Supervisor /core/api/error_log, "
+                    "/host/logs (journald), /core/logs, and filesystem paths "
+                    + ", ".join(str(p) for p in _LOG_CANDIDATES)
+                    + ". Check add-on logs for details."
+                )
+            },
+            status=503,
+        )
+
     return web.json_response({"log_text": log_text})
 
 
