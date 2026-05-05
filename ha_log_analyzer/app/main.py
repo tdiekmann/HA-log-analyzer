@@ -50,6 +50,14 @@ _SYSLOG_LINE_RE = re.compile(
     re.MULTILINE,
 )
 
+# HA log line pattern: timestamp LEVEL (thread) [logger] — used for content-based matching
+# when the syslog service identifier isn't "homeassistant"
+_HA_MSG_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ "
+    r"(?:DEBUG|INFO|WARNING|ERROR|CRITICAL) "
+    r"\([^)]+\) \["
+)
+
 
 def _supervisor_token() -> str:
     return os.environ.get("SUPERVISOR_TOKEN", "")
@@ -59,17 +67,36 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
-def _filter_syslog_for_ha(text: str) -> str:
-    """From plain syslog output keep only homeassistant entries, returning the message body.
+def _filter_syslog_for_ha(text: str) -> tuple[str, str]:
+    """From plain syslog output extract HA log lines, returning (lines, debug_info).
 
-    Each syslog line:  timestamp hostname homeassistant[pid]: <HA log line>
-    We strip the header so the HA log parser sees the bare HA-format line.
+    Strategy 1 — service name: keep lines where service == 'homeassistant'.
+    Strategy 2 — content match: keep message bodies that look like HA log entries
+                 (timestamp LEVEL (thread) [logger]). Handles containers whose
+                 syslog identifier isn't 'homeassistant'.
+    debug_info includes the unique service names seen, for diagnostics.
     """
-    lines: list[str] = []
+    by_service: list[str] = []
+    by_content: list[str] = []
+    services: set[str] = set()
+
     for m in _SYSLOG_LINE_RE.finditer(text):
-        if m.group(1) == "homeassistant":
-            lines.append(m.group(2))
-    return "\n".join(lines)
+        svc = m.group(1)
+        msg = m.group(2)
+        services.add(svc)
+        if svc == "homeassistant":
+            by_service.append(msg)
+        if _HA_MSG_RE.match(msg):
+            by_content.append(msg)
+
+    svc_summary = ", ".join(sorted(services)[:20]) or "none"
+    debug = f"services seen: {svc_summary}"
+
+    if by_service:
+        return "\n".join(by_service), debug
+    if by_content:
+        return "\n".join(by_content), debug + " (matched by content)"
+    return "", debug
 
 
 def _parse_journald_export(raw: str) -> str:
@@ -170,11 +197,11 @@ async def _fetch_log_core_logs_identifier(
     )
     if text is not None:
         # Output is syslog-format with homeassistant header; strip it to get bare HA log lines
-        stripped = _filter_syslog_for_ha(text)
+        stripped, dbg = _filter_syslog_for_ha(text)
         result = stripped if stripped.strip() else text
         _LOGGER.info(
-            "Fetched %d bytes from core/logs/identifiers/homeassistant (%d after syslog strip)",
-            len(text), len(result),
+            "Fetched %d bytes from core/logs/identifiers/homeassistant (%d after syslog strip, %s)",
+            len(text), len(result), dbg,
         )
         return result
     errors.append(f"core/logs/identifiers/homeassistant: {err}")
@@ -184,37 +211,30 @@ async def _fetch_log_core_logs_identifier(
 async def _fetch_log_host_journal(
     session: aiohttp.ClientSession, errors: list[str]
 ) -> str | None:
-    """Supervisor /host/logs — journald export, filter for homeassistant entries."""
+    """Supervisor /host/logs — try text/x-log then text/plain, filter for HA entries."""
     token = _supervisor_token()
     if not token:
         errors.append("host/logs: SUPERVISOR_TOKEN not set")
         return None
-    hdrs = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.fdo.journal",
-    }
-    text, err = await _get(session, f"{_SUPERVISOR_URL}/host/logs", hdrs)
-    if text is not None:
-        parsed = _parse_journald_export(text)
-        if parsed.strip():
-            _LOGGER.info("Extracted %d chars from host/logs journal", len(parsed))
-            return parsed
-        err = "parsed OK but no homeassistant entries found"
-    errors.append(f"host/logs (journald): {err}")
 
-    # Retry with plain text — full syslog output; filter to homeassistant entries only
-    hdrs2 = {"Authorization": f"Bearer {token}", "Accept": "text/plain"}
-    text2, err2 = await _get(session, f"{_SUPERVISOR_URL}/host/logs", hdrs2)
-    if text2 is not None:
-        filtered = _filter_syslog_for_ha(text2)
-        if filtered.strip():
-            _LOGGER.info(
-                "Extracted %d chars of HA entries from host/logs plain (%d total)",
-                len(filtered), len(text2),
-            )
-            return filtered
-        err2 = "no homeassistant entries found in syslog output"
-    errors.append(f"host/logs (plain): {err2}")
+    url = f"{_SUPERVISOR_URL}/host/logs"
+    auth = {"Authorization": f"Bearer {token}"}
+
+    # Supervisor 2026.04 explicitly supports text/x-log and text/plain (not journal MIME)
+    for accept in ("text/x-log", "text/plain"):
+        hdrs = {**auth, "Accept": accept}
+        text, err = await _get(session, url, hdrs)
+        if text is not None:
+            filtered, dbg = _filter_syslog_for_ha(text)
+            if filtered.strip():
+                _LOGGER.info(
+                    "Extracted %d chars of HA entries from host/logs (%s, %d total, %s)",
+                    len(filtered), accept, len(text), dbg,
+                )
+                return filtered
+            err = f"no HA entries found ({dbg})"
+        errors.append(f"host/logs ({accept}): {err}")
+
     return None
 
 
