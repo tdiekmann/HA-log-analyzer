@@ -25,8 +25,9 @@ Supports OpenRouter and any OpenAI-compatible endpoint.
 ## Installation — HA Add-on (recommended)
 
 The add-on runs as a Docker container managed by Home Assistant and exposes a
-web UI in the sidebar. It connects to the Supervisor directly to pull the
-current log, so no file copying is needed.
+web UI in the sidebar. It reads logs directly from the Supervisor — no file
+copying needed, and works on HA OS 2026.04 and later where
+`home-assistant.log` is no longer written to disk.
 
 ### 1. Add the repository
 
@@ -64,10 +65,25 @@ Click **Start**, then **Open Web UI** (or use the sidebar panel **Log Analyzer**
 
 The UI gives you two ways to analyse logs:
 
-- **Live Analysis** — fetches the current `home-assistant.log` from the
-  Supervisor with one click.
+- **Live Analysis** — fetches the current log from the Supervisor with one
+  click. Works on all HA OS versions including those where
+  `home-assistant.log` is no longer written to disk.
 - **Upload Log File** — drag-and-drop (or browse) a `home-assistant.log` file
   from your computer.
+
+### How log fetching works
+
+The add-on tries several Supervisor API endpoints in order and uses the first
+one that returns usable data:
+
+1. `GET /core/api/error_log` — HA Core in-memory log handler (no disk file needed)
+2. `GET /core/logs/identifiers/homeassistant` — journald filtered to HA entries
+3. `GET /host/logs` — full host journal, HA entries extracted and syslog headers stripped
+4. `GET /core/logs` — Supervisor native endpoint (fallback)
+5. `/config/home-assistant.log` — filesystem fallback for non-HAOS installs
+
+If all sources fail the error message includes the specific HTTP status from
+each attempt to aid troubleshooting.
 
 ---
 
@@ -136,9 +152,8 @@ ha_log_analyzer/              ← HA add-on (Docker container + web UI)
 ├── Dockerfile
 ├── config.yaml
 ├── build.yaml
-├── run.sh
 └── app/
-    ├── main.py               aiohttp web server
+    ├── main.py               aiohttp web server + multi-source log fetching
     ├── analyzer.py           OpenRouter / OpenAI client
     ├── ha_log.py             HA log parser
     ├── redactor.py           pure-Python regex redactor (zero deps)
