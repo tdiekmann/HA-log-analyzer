@@ -53,7 +53,7 @@ Open the add-on's **Configuration** tab and fill in:
 | Option | Description | Default |
 |--------|-------------|---------|
 | `api_key` | OpenRouter (or other) API key | *(required)* |
-| `model` | Model ID passed to the API | `anthropic/claude-haiku-4-5` |
+| `model` | Default model ID (overridable per-run in the UI) | `anthropic/claude-haiku-4-5` |
 | `base_url` | API base URL — any OpenRouter-compatible endpoint | `https://openrouter.ai/api/v1` |
 | `default_lines` | How many matching log entries to include | `500` |
 | `default_levels` | Log levels to analyse | `WARNING, ERROR, CRITICAL` |
@@ -71,15 +71,35 @@ The UI gives you two ways to analyse logs:
 - **Upload Log File** — drag-and-drop (or browse) a `home-assistant.log` file
   from your computer.
 
+### UI options
+
+| Control | Description |
+|---------|-------------|
+| **Model** | Editable combo box pre-populated with all models available from your configured endpoint. Type to filter or enter any model ID directly. Selection overrides the add-on config default for that run. |
+| **Lines** | Maximum number of matching log entries to send to the LLM. |
+| **Levels** | Log severity levels to include (DEBUG / INFO / WARNING / ERROR / CRITICAL). |
+
+### What the analysis includes
+
+Each identified issue is reported with:
+
+- **Title** and affected component
+- **Root cause** and recommended fix
+- **Last seen** — timestamp of the most recent log entry for that issue, plus
+  its age relative to the time of analysis (e.g. `2026-05-05 10:28:55 · 2m ago`)
+
+The age indicator makes it easy to distinguish active problems from issues that
+were already resolved before you ran the analysis.
+
 ### How log fetching works
 
 The add-on tries several Supervisor API endpoints in order and uses the first
 one that returns usable data:
 
-1. `GET /core/api/error_log` — HA Core in-memory log handler (no disk file needed)
+1. `GET /core/api/error_log` — HA Core in-memory log handler
 2. `GET /core/logs/identifiers/homeassistant` — journald filtered to HA entries
-3. `GET /host/logs` — full host journal, HA entries extracted and syslog headers stripped
-4. `GET /core/logs` — Supervisor native endpoint (fallback)
+3. `GET /core/logs` — Supervisor native container-log endpoint
+4. `GET /host/logs` — host journal, HA entries extracted by content pattern
 5. `/config/home-assistant.log` — filesystem fallback for non-HAOS installs
 
 If all sources fail the error message includes the specific HTTP status from
